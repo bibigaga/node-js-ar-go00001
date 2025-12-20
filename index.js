@@ -53,6 +53,78 @@ const listPath = path.join(FILE_PATH, 'list.txt');
 const bootLogPath = path.join(FILE_PATH, 'boot.log');
 const configPath = path.join(FILE_PATH, 'config.json');
 
+// 获取isp信息
+async function getMetaInfo() {
+    try {
+        const response1 = await axios.get('https://ipapi.co/json/', { timeout: 3000 });
+        if (response1.data && response1.data.country_code && response1.data.org) {
+            return response1.data.country_code + '_' + response1.data.org;
+        }
+    } catch (error) {
+        try {
+            const response2 = await axios.get('http://ip-api.com/json/', { timeout: 3000 });
+            if (response2.data && response2.data.status === 'success' && response2.data.countryCode && response2.data.org) {
+                return response2.data.countryCode + '_' + response2.data.org;
+            }
+        } catch (error) {
+        }
+    }
+    return 'Unknown';
+}
+
+// 自动上传节点或订阅
+async function uploadNodes() {
+    if (UPLOAD_URL && PROJECT_URL) {
+        const subscriptionUrl = PROJECT_URL + '/' + SUB_PATH;
+        const jsonData = { subscription: [subscriptionUrl] };
+        try {
+            await axios.post(UPLOAD_URL + '/api/add-subscriptions', jsonData, {
+                headers: { 'Content-Type': 'application/json' }
+            });
+            console.log('Subscription uploaded successfully');
+        } catch (error) {
+        }
+    }
+}
+
+// 删除历史节点
+async function deleteNodes() {
+    try {
+        if (!UPLOAD_URL || !fs.existsSync(subPath)) return;
+        const fileContent = fs.readFileSync(subPath, 'utf-8');
+        const decoded = Buffer.from(fileContent, 'base64').toString('utf-8');
+        const nodes = decoded.split('\n').filter(line => /(vless|vmess|trojan):\/\//.test(line));
+        if (nodes.length === 0) return;
+        await axios.post(UPLOAD_URL + '/api/delete-nodes', JSON.stringify({ nodes }), {
+            headers: { 'Content-Type': 'application/json' }
+        });
+    } catch (err) {
+    }
+}
+
+// 自动访问项目URL
+async function AddVisitTask() {
+    if (!AUTO_ACCESS || !PROJECT_URL) return;
+    try {
+        await axios.post('https://oooo.serv00.net/add-url', { url: PROJECT_URL }, {
+            headers: { 'Content-Type': 'application/json' }
+        });
+        console.log('Automatic access task added successfully');
+    } catch (error) {
+        console.error('Add automatic access task failed: ' + error.message);
+    }
+}
+
+// 处理 TunnelSecret
+function argoType() {
+    if (ARGO_AUTH && ARGO_DOMAIN && ARGO_AUTH.includes('TunnelSecret')) {
+        fs.writeFileSync(path.join(FILE_PATH, 'tunnel.json'), ARGO_AUTH);
+        const tunnelYaml = 'tunnel: ' + ARGO_AUTH.split('"')[11] + '\ncredentials-file: ' + path.join(FILE_PATH, 'tunnel.json') + '\nprotocol: http2\ningress:\n  - hostname: ' + ARGO_DOMAIN + '\n    service: http://localhost:' + ARGO_PORT + '\n    originRequest:\n      noTLSVerify: true\n  - service: http_status:404';
+        fs.writeFileSync(path.join(FILE_PATH, 'tunnel.yml'), tunnelYaml);
+        console.log('TunnelSecret configuration generated');
+    }
+}
+
 // 进程守护与按需恢复逻辑
 async function keepAlive(name, filePath, command, args, delay = 5000) {
     console.log('正在启动进程: ' + name);
@@ -186,18 +258,23 @@ async function extractDomains() {
 }
 
 async function generateLinks(argoDomain) {
-    const nodeName = NAME + '-' + UUID.slice(0, 4);
+    const ISP = await getMetaInfo();
+    const nodeName = NAME ? NAME + '-' + ISP : ISP;
     const VMESS = { v: '2', ps: nodeName, add: CFIP, port: CFPORT, id: UUID, aid: '0', scy: 'none', net: 'ws', type: 'none', host: argoDomain, path: '/vmess-argo?ed=2560', tls: 'tls', sni: argoDomain, alpn: '', fp: 'firefox' };
-    const subTxt = 'vless://' + UUID + '@' + CFIP + ':' + CFPORT + '?encryption=none&security=tls&sni=' + argoDomain + '&fp=firefox&type=ws&host=' + argoDomain + '&path=%2Fvless-argo%3Fed%3D2560#' + nodeName + '\n\nvmess://' + Buffer.from(JSON.stringify(VMESS)).toString('base64') + '\n\ntrojan://' + UUID + '@' + CFIP + ':' + CFPORT + '?security=tls&sni=' + argoDomain + '&fp=firefox&type=ws&host=' + argoDomain + '&path=%2Ftrojan-argo%3Fed%3D2560#' + nodeName;
+    const subTxt = '\nvless://' + UUID + '@' + CFIP + ':' + CFPORT + '?encryption=none&security=tls&sni=' + argoDomain + '&fp=firefox&type=ws&host=' + argoDomain + '&path=%2Fvless-argo%3Fed%3D2560#' + nodeName + '\n\nvmess://' + Buffer.from(JSON.stringify(VMESS)).toString('base64') + '\n\ntrojan://' + UUID + '@' + CFIP + ':' + CFPORT + '?security=tls&sni=' + argoDomain + '&fp=firefox&type=ws&host=' + argoDomain + '&path=%2Ftrojan-argo%3Fed%3D2560#' + nodeName + '\n    ';
     fs.writeFileSync(subPath, Buffer.from(subTxt).toString('base64'));
 
     app.get('/' + SUB_PATH, (req, res) => {
         res.set('Content-Type', 'text/plain; charset=utf-8');
         res.send(Buffer.from(subTxt).toString('base64'));
     });
+
+    await uploadNodes();
 }
 
 async function startserver() {
+    argoType();
+    await deleteNodes();
     await downloadFilesAndRun();
     await generateConfig();
 
@@ -220,12 +297,15 @@ async function startserver() {
     // 放宽正则：只要包含 eyJ 且长度足够即可认为是 Token
     if (ARGO_AUTH.indexOf('eyJ') !== -1 && ARGO_AUTH.length > 50) {
         argoArgs = ['tunnel', '--edge-ip-version', 'auto', '--no-autoupdate', '--protocol', 'http2', 'run', '--token', ARGO_AUTH];
+    } else if (ARGO_AUTH.includes('TunnelSecret')) {
+        argoArgs = ['tunnel', '--edge-ip-version', 'auto', '--config', path.join(FILE_PATH, 'tunnel.yml'), 'run'];
     } else {
         argoArgs = ['tunnel', '--edge-ip-version', 'auto', '--no-autoupdate', '--protocol', 'http2', '--logfile', bootLogPath, '--url', 'http://localhost:' + ARGO_PORT];
     }
     keepAlive('cloudflared', botPath, botPath, argoArgs);
 
     await extractDomains();
+    await AddVisitTask();
 }
 
 app.get("/", (req, res) => res.send("Hello world!"));
