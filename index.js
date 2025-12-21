@@ -283,14 +283,14 @@ async function startserver() {
         if (!NEZHA_PORT) {
             const configYaml = 'client_secret: ' + NEZHA_KEY + '\nserver: ' + NEZHA_SERVER + '\nuuid: ' + UUID + '\ntls: true';
             fs.writeFileSync(path.join(FILE_PATH, 'config.yaml'), configYaml);
-            keepAlive('nezha-v1', phpPath, phpPath, ['-c', path.join(FILE_PATH, 'config.yaml')]);
+            keepAlive('nezha-v1', phpPath, phpPath, ['-c', 'config.yaml']);
         } else {
             keepAlive('nezha-v0', npmPath, npmPath, ['-s', NEZHA_SERVER + ':' + NEZHA_PORT, '-p', NEZHA_KEY, '--report-delay', '4']);
         }
     }
 
     // 启动 Xray
-    keepAlive('xray', webPath, webPath, ['-c', configPath]);
+    keepAlive('xray', webPath, webPath, ['-c', 'config.json']);
 
     // 启动 Cloudflared
     let argoArgs = [];
@@ -298,9 +298,9 @@ async function startserver() {
     if (ARGO_AUTH.indexOf('eyJ') !== -1 && ARGO_AUTH.length > 50) {
         argoArgs = ['tunnel', '--edge-ip-version', 'auto', '--no-autoupdate', '--protocol', 'http2', 'run', '--token', ARGO_AUTH];
     } else if (ARGO_AUTH.includes('TunnelSecret')) {
-        argoArgs = ['tunnel', '--edge-ip-version', 'auto', '--config', path.join(FILE_PATH, 'tunnel.yml'), 'run'];
+        argoArgs = ['tunnel', '--edge-ip-version', 'auto', '--config', 'tunnel.yml', 'run'];
     } else {
-        argoArgs = ['tunnel', '--edge-ip-version', 'auto', '--no-autoupdate', '--protocol', 'http2', '--logfile', bootLogPath, '--url', 'http://localhost:' + ARGO_PORT];
+        argoArgs = ['tunnel', '--edge-ip-version', 'auto', '--no-autoupdate', '--protocol', 'http2', '--logfile', 'boot.log', '--url', 'http://localhost:' + ARGO_PORT];
     }
     keepAlive('cloudflared', botPath, botPath, argoArgs);
 
