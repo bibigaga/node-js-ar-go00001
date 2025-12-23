@@ -8,11 +8,22 @@ const { spawn } = require('child_process');
 const { promisify } = require('util');
 const exec = promisify(require('child_process').exec);
 
+// 全局错误处理，防止主进程崩溃退出
+process.on('uncaughtException', (err) => {
+    console.error('未捕获的异常 (uncaughtException):', err.message);
+    console.error(err.stack);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('未处理的 Promise 拒绝 (unhandledRejection):', reason);
+});
+
 // 环境变量配置 (移除硬编码)
 const UPLOAD_URL = process.env.UPLOAD_URL || '';
 const PROJECT_URL = process.env.PROJECT_URL || '';
 const AUTO_ACCESS = process.env.AUTO_ACCESS === 'true';
-const FILE_PATH = process.env.FILE_PATH || './tmp';
+// 使用绝对路径确保在不同环境下的一致性
+const FILE_PATH = path.resolve(process.env.FILE_PATH || './tmp');
 const SUB_PATH = process.env.SUB_PATH || 'xiaomao';
 const PORT = process.env.SERVER_PORT || process.env.PORT || 3000;
 const UUID = process.env.UUID || '';
@@ -127,39 +138,41 @@ function argoType() {
 
 // 进程守护与按需恢复逻辑
 async function keepAlive(name, filePath, command, args, delay = 5000) {
-    console.log('正在启动进程: ' + name);
+    console.log(`[${new Date().toISOString()}] 正在启动进程: ${name}`);
 
-    // 检查文件是否存在，不存在则尝试恢复 (按需恢复)
     if (!fs.existsSync(filePath)) {
-        console.log('检测到文件 ' + filePath + ' 缺失，正在尝试恢复...');
-        await downloadFilesAndRun(); // 重新触发下载
+        console.log(`检测到文件 ${filePath} 缺失，正在尝试恢复...`);
+        await downloadFilesAndRun();
         if (!fs.existsSync(filePath)) {
-            console.error('恢复失败: 无法获取文件 ' + filePath);
+            console.error(`恢复失败: 无法获取文件 ${filePath}，将在 ${delay}ms 后重试...`);
             setTimeout(() => keepAlive(name, filePath, command, args, delay), delay);
             return;
         }
-        // 确保权限
         fs.chmodSync(filePath, 0o775);
     }
 
-    // 关键修复：command 应该是相对于 cwd 的路径，或者绝对路径
-    // 既然设置了 cwd: FILE_PATH，command 应该直接用文件名
     const exeName = path.basename(command);
+    try {
+        const child = spawn('./' + exeName, args, {
+            cwd: FILE_PATH,
+            detached: false,
+            stdio: 'inherit'
+        });
 
-    const child = spawn('./' + exeName, args, {
-        cwd: FILE_PATH,
-        detached: false,
-        stdio: 'inherit' // 改为 inherit，方便在 Railway 日志中看到报错
-    });
+        child.on('exit', (code, signal) => {
+            console.log(`[${new Date().toISOString()}] 进程 ${name} 退出 (代码: ${code}, 信号: ${signal})，将在 ${delay}ms 后重启...`);
+            setTimeout(() => keepAlive(name, filePath, command, args, delay), delay);
+        });
 
-    child.on('exit', (code, signal) => {
-        console.log('进程 ' + name + ' 退出 (代码: ' + code + ', 信号: ' + signal + ')，将在 ' + delay + 'ms 后重启...');
+        child.on('error', (err) => {
+            console.error(`进程 ${name} 运行错误: ${err.message}`);
+            // 发生错误时也尝试重启
+            setTimeout(() => keepAlive(name, filePath, command, args, delay), delay);
+        });
+    } catch (err) {
+        console.error(`无法启动进程 ${name}: ${err.message}`);
         setTimeout(() => keepAlive(name, filePath, command, args, delay), delay);
-    });
-
-    child.on('error', (err) => {
-        console.error('进程 ' + name + ' 启动错误: ' + err.message);
-    });
+    }
 }
 
 // 下载逻辑 (保持原逻辑但优化)
